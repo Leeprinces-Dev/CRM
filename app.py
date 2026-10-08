@@ -1,35 +1,39 @@
 import streamlit as st
 import pandas as pd
 import datetime
+from streamlit_gsheets import GSheetsConnection
 
-# Configuration Page
+# ==========================================
+# 1. CONFIGURATION PAGE & CONNECTION
+# ==========================================
 st.set_page_config(page_title="Sales Pipeline & CRM", layout="wide")
 
-# Initialize Session State
-if "leads" not in st.session_state:
-    st.session_state.leads = pd.DataFrame([
-        {
-            "id": 1, 
-            "nama": "Budi Santoso", 
-            "kontak": "08123456789", 
-            "sumber": "Meta Ads", 
-            "kualifikasi": "Hot", 
-            "status": "Lead Masuk",
-            "tanggal": "2026-10-01"
-        },
-        {
-            "id": 2, 
-            "nama": "Siti Rahma", 
-            "kontak": "08987654321", 
-            "sumber": "Website Form", 
-            "kualifikasi": "Warm", 
-            "status": "Lead Qualification",
-            "tanggal": "2026-10-03"
-        }
-    ])
+# Inisialisasi Koneksi Google Sheets
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
+def load_data():
+    """Mengambil data paling update dari Google Sheet 'CRM_DBase'"""
+    try:
+        df = conn.read(ttl=0)
+        # Menghapus baris yang seluruh kolomnya kosong
+        df = df.dropna(how="all")
+        
+        # Memastikan seluruh kolom wajib tersedia
+        expected_cols = ["id", "nama", "kontak", "sumber", "kualifikasi", "status", "tanggal"]
+        for col in expected_cols:
+            if col not in df.columns:
+                df[col] = ""
+        return df
+    except Exception as e:
+        # Fallback jika sheet belum bisa dibaca
+        return pd.DataFrame(columns=["id", "nama", "kontak", "sumber", "kualifikasi", "status", "tanggal"])
+
+def save_data(df):
+    """Menyimpan/menimpa seluruh DataFrame kembali ke Google Sheet 'CRM_DBase'"""
+    conn.update(data=df)
+
+# Read Data awal
+df_leads = load_data()
 
 STAGES = [
     "Lead Masuk", 
@@ -40,15 +44,19 @@ STAGES = [
     "After-Sales Service"
 ]
 
-# CREDENTIALS ADMIN (Ganti sesuai kebutuhan)
+# Credentials Admin
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "123"
 
-# Sidebar Navigation Utama
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+# Navigation Sidebar Utama
 access_type = st.sidebar.radio("Akses Aplikasi", ["Form Pelanggan (Publik)", "Login Admin"])
 
+
 # ==========================================
-# 1. HALAMAN PUBLIK (CALON PELANGGAN)
+# 2. HALAMAN PUBLIK (CALON PELANGGAN)
 # ==========================================
 if access_type == "Form Pelanggan (Publik)":
     st.title("📋 Form Konsultasi & Layanan")
@@ -63,8 +71,12 @@ if access_type == "Form Pelanggan (Publik)":
         
         if submitted:
             if nama and whatsapp:
-                new_id = len(st.session_state.leads) + 1
-                new_row = {
+                current_df = load_data()
+                
+                # Hitung ID baru
+                new_id = len(current_df) + 1
+                
+                new_row = pd.DataFrame([{
                     "id": new_id,
                     "nama": nama,
                     "kontak": whatsapp,
@@ -72,14 +84,19 @@ if access_type == "Form Pelanggan (Publik)":
                     "kualifikasi": "Warm",
                     "status": "Lead Masuk",
                     "tanggal": str(datetime.date.today())
-                }
-                st.session_state.leads = pd.concat([st.session_state.leads, pd.DataFrame([new_row])], ignore_index=True)
+                }])
+                
+                # Gabungkan dan simpan ke Google Sheet
+                updated_df = pd.concat([current_df, new_row], ignore_index=True)
+                save_data(updated_df)
+                
                 st.success("Terima kasih! Data Anda telah terkirim. Tim kami akan segera menghubungi Anda via WhatsApp.")
             else:
                 st.error("Mohon isi Nama Lengkap dan Nomor WhatsApp Anda.")
 
+
 # ==========================================
-# 2. HALAMAN LOGIN / DASHBOARD ADMIN
+# 3. HALAMAN LOGIN / DASHBOARD ADMIN
 # ==========================================
 elif access_type == "Login Admin":
     if not st.session_state.logged_in:
@@ -99,20 +116,27 @@ elif access_type == "Login Admin":
                     st.error("Username atau Password salah!")
     else:
         st.sidebar.markdown("---")
-        st.sidebar.write("👤 Status: **LoggedIn as Admin**")
+        st.sidebar.write("👤 Status: **Logged In as Admin**")
         if st.sidebar.button("Logout"):
             st.session_state.logged_in = False
             st.rerun()
 
         menu = st.sidebar.radio("Navigation Admin", ["Dashboard", "Kanban Pipeline", "Tambah Lead Manual", "Kirim Follow-Up"])
 
-        # DASHBOARD
+        # Ambil data terbaru untuk Admin
+        df_leads = load_data()
+
+        # ------------------------------------------
+        # A. DASHBOARD ADMIN
+        # ------------------------------------------
         if menu == "Dashboard":
             st.title("📊 CRM & Sales Pipeline Overview")
             
-            df = st.session_state.leads
-            total_leads = len(df)
-            closing = len(df[df["status"].isin(["Closing Deal", "After-Sales Service"])])
+            if st.button("🔄 Refresh Data Google Sheets"):
+                st.rerun()
+
+            total_leads = len(df_leads)
+            closing = len(df_leads[df_leads["status"].isin(["Closing Deal", "After-Sales Service"])]) if total_leads > 0 else 0
             conversion_rate = (closing / total_leads * 100) if total_leads > 0 else 0
 
             col1, col2, col3 = st.columns(3)
@@ -120,19 +144,20 @@ elif access_type == "Login Admin":
             col2.metric("Deal Closing", closing)
             col3.metric("Conversion Rate", f"{conversion_rate:.1f}%")
 
-            st.subheader("Data Lead Terbaru")
-            st.dataframe(df, use_container_width=True)
+            st.subheader("Data Arsip Google Sheets (`CRM_DBase`)")
+            st.dataframe(df_leads, use_container_width=True)
 
-        # KANBAN PIPELINE
+        # ------------------------------------------
+        # B. KANBAN PIPELINE
+        # ------------------------------------------
         elif menu == "Kanban Pipeline":
             st.title("🗂️ Sales Pipeline Board")
             cols = st.columns(len(STAGES))
-            df = st.session_state.leads
 
             for idx, stage in enumerate(STAGES):
                 with cols[idx]:
                     st.markdown(f"### {stage}")
-                    stage_leads = df[df["status"] == stage]
+                    stage_leads = df_leads[df_leads["status"] == stage]
                     
                     for _, lead in stage_leads.iterrows():
                         with st.expander(f"👤 {lead['nama']}", expanded=True):
@@ -140,61 +165,19 @@ elif access_type == "Login Admin":
                             st.caption(f"🏷️ Kategori: **{lead['kualifikasi']}**")
                             st.caption(f"📌 Sumber: {lead['sumber']}")
                             
+                            current_index = STAGES.index(lead["status"]) if lead["status"] in STAGES else 0
                             new_status = st.selectbox(
                                 "Pindah Status:", 
                                 STAGES, 
-                                index=STAGES.index(lead["status"]), 
+                                index=current_index, 
                                 key=f"status_{lead['id']}"
                             )
                             
                             if new_status != lead["status"]:
-                                st.session_state.leads.loc[
-                                    st.session_state.leads["id"] == lead["id"], "status"
-                                ] = new_status
+                                df_leads.loc[df_leads["id"] == lead["id"], "status"] = new_status
+                                save_data(df_leads)
+                                st.success("Status di-update ke Google Sheets!")
                                 st.rerun()
 
-        # TAMBAH LEAD MANUAL
-        elif menu == "Tambah Lead Manual":
-            st.title("➕ Input Lead Baru (Manual)")
-            
-            with st.form("add_lead_form"):
-                nama = st.text_input("Nama Lengkap / Perusahaan")
-                kontak = st.text_input("Nomor WhatsApp / Telepon")
-                sumber = st.selectbox("Sumber Lead", ["Meta Ads", "Google Ads", "Website Form", "Instagram DM", "Referral"])
-                kualifikasi = st.selectbox("Hasil Kualifikasi Awal", ["Hot", "Warm", "Cold"])
-                
-                submitted = st.form_submit_button("Simpan Lead")
-                
-                if submitted:
-                    new_id = len(st.session_state.leads) + 1
-                    new_row = {
-                        "id": new_id,
-                        "nama": nama,
-                        "kontak": kontak,
-                        "sumber": sumber,
-                        "kualifikasi": kualifikasi,
-                        "status": "Lead Masuk",
-                        "tanggal": str(datetime.date.today())
-                    }
-                    st.session_state.leads = pd.concat([st.session_state.leads, pd.DataFrame([new_row])], ignore_index=True)
-                    st.success(f"Lead '{nama}' berhasil ditambahkan!")
-
-        # FOLLOW-UP AUTOMATION
-        elif menu == "Kirim Follow-Up":
-            st.title("🤖 Simulator Follow-Up Otomatis")
-            
-            lead_names = st.session_state.leads["nama"].tolist()
-            if lead_names:
-                selected_lead = st.selectbox("Pilih Lead untuk Follow-Up:", lead_names)
-                lead_info = st.session_state.leads[st.session_state.leads["nama"] == selected_lead].iloc[0]
-                
-                st.write(f"**Kontak:** {lead_info['kontak']}")
-                st.write(f"**Status Saat Ini:** {lead_info['status']}")
-                
-                template_pesan = f"Halo Kak {lead_info['nama']},\n\nTerima kasih telah berkonsultasi dengan kami.\nApakah ada hal lain yang bisa kami bantu?"
-                pesan = st.text_area("Pesan WhatsApp / Telegram:", template_pesan, height=150)
-                
-                if st.button("Kirim Pesan Otomatis (Webhook Test)"):
-                    st.success(f"Pesan berhasil dikirimkan ke {lead_info['kontak']}!")
-            else:
-                st.info("Belum ada data lead.")
+        # ------------------------------------------
+        # C. TAMBA
